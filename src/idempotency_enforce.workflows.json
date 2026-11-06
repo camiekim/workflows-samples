@@ -1,0 +1,93 @@
+{
+  "main": {
+    "params": [
+      "args"
+    ],
+    "steps": [
+      {
+        "init": {
+          "assign": [
+            {
+              "project_id": "${sys.get_env(\"GOOGLE_CLOUD_PROJECT_ID\")}"
+            },
+            {
+              "execution_id": "${sys.get_env(\"GOOGLE_CLOUD_WORKFLOW_EXECUTION_ID\")}"
+            },
+            {
+              "order_id": "${string(args.order_id)}"
+            },
+            {
+              "payment_url": "FUNCTION_URL"
+            }
+          ]
+        }
+      },
+      {
+        "create_order_record": {
+          "try": {
+            "call": "googleapis.firestore.v1.projects.databases.documents.createDocument",
+            "args": {
+              "collectionId": "orders",
+              "parent": "${\"projects/\" + project_id + \"/databases/(default)/documents\"}",
+              "documentId": "${order_id}",
+              "body": {
+                "fields": {
+                  "order_state": {
+                    "stringValue": "payment_not_processed"
+                  },
+                  "workflow_execution_id": {
+                    "stringValue": "${execution_id}"
+                  }
+                }
+              }
+            },
+            "result": "create_doc_result"
+          },
+          "except": {
+            "as": "e",
+            "steps": [
+              {
+                "handle_create_error": {
+                  "switch": [
+                    {
+                      "condition": "${map.get(e, \"code\") == 409}",
+                      "return": "${\"Duplicate request ignored for order \" + order_id}"
+                    }
+                  ]
+                }
+              },
+              {
+                "unhandled_error": {
+                  "raise": "${e}"
+                }
+              }
+            ]
+          }
+        }
+      },
+      {
+        "call_payment_service": {
+          "try": {
+            "call": "http.post",
+            "args": {
+              "url": "${payment_url}",
+              "auth": {
+                "type": "OIDC"
+              },
+              "body": {
+                "order_id": "${order_id}"
+              }
+            },
+            "result": "payment_response"
+          },
+          "retry": "${http.default_retry}"
+        }
+      },
+      {
+        "finish": {
+          "return": "${payment_response.body}"
+        }
+      }
+    ]
+  }
+}
